@@ -328,19 +328,37 @@ unary 인터셉터가 내는 `op=` 형식과 통일해 harness 파싱을 단순�
 이번 PR은 rune-mcp **안쪽 계측**만 넣었다. 리포트를 만들려면 reference
 `latency_bench.py`가 하던 일이 별도로 필요하다:
 
-- **N 사전적재** (sweep 지점마다 인덱스를 N개로 채움) + `RUNE_BENCH_N` 세팅
-- 시나리오(T1/T2/T5/T6…) 구동 · 12회 반복 · warmup 3
-- p50/p95 집계
-- **bench 로그 파싱 → `op=`→구간 매핑 → `req=` group-by**
-- **셋업 라인 분리(필수)** — bench=on 부팅 시 boot(`OpenIndex`)·N 사전적재도 같은 conn을 타
-  bench 라인을 낸다. tool 핸들러 밖 호출은 `req=`가 비어 group-by에서 자연 제외되지만,
-  **사전적재가 capture/`Insert`를 거치면 `seg=envector op=…/batch_insert_data` 라인이 N개 쏟아져
-  insert 구간 통계를 오염**시킨다 → req 빈 라인 제외 + (적재가 측정 요청과 같은 경로면) warmup·
-  sweep 윈도로 명시 분리해야 한다.
+- **N 사전적재** — reference는 **직접 envector batch insert**로 채운다(측정 경로 우회):
+  전용 bench 인덱스에 deterministic 랜덤 벡터(seed `0xBEEF`, `BENCH_DIM`)를 `PRIMER_BATCH_ROWS`
+  청크로 적재 후 searchable 폴링(`latency_bench.py:671` `_prime_bench_index`; `run_sweep`은
+  `--direct-envector` 요구 `:1479`). **per-N 격리**: N마다 drop+create+prime한 fresh 인덱스
+  (`{bench}_N{N}_…`) — mutating(capture)=시나리오별, read-only(recall)=그룹 공유. 프로덕션
+  인덱스는 안 건드림.
+- 시나리오(T1/T2/T5/T6…) 구동 · 12회 반복 · warmup 3 · p50/p95 집계
+- **bench 로그 파싱 → `op=`→구간 매핑(§2.2) → `req=` group-by**
+- **rune-mcp를 ACTIVE로 부팅시키는 프로비저닝(harness 책무)** — 평소 `/rune:configure`+
+  `/rune:activate`(rune 플러그인/CLI)가 하던 일이 bench엔 없다. 그게 없으면 `boot.go`는
+  **Dormant에서 멈춘다**("config.json not found" `boot.go:355`). 그래서 runebench가 대신해야 한다:
+  ① `~/.rune/config.json`(vault endpoint·token·state=`active`) 작성 ② vault·runed(embedder)를
+  띄워두기 — 부팅이 `GetAgentManifest`로 키+인덱스명을 받고(`boot.go:452`) OpenIndex하므로
+  ③ state=`active`면 기동 시 자동 부팅, 아니면 `activate` 툴 호출. config는 디스크에 남으니
+  **1회 프로비저닝 후 per-N 재기동은 ACTIVE 직행**. ⚠️ **인덱스명은 vault manifest에서 온다**
+  (`boot.go:498` `bundle.IndexName`) — 로컬 config가 아니라 → per-N 인덱스 전환이 vault
+  프로비저닝과 결합된다(고정 인덱스 재-prime vs per-N manifest, 미결 하위결정).
+- **부팅 장치(`RUNE_BENCH_N`은 프로세스당 고정)** — bench는 env-gate(`bench.go:39`)뿐 rune-mcp엔
+  플래그가 없다. `RUNE_BENCH_N`은 env라 프로세스당 1값이므로, sweep마다 N을 바꾸려면 **N 지점마다
+  rune-mcp를 `RUNE_MCP_BENCH=1 RUNE_BENCH_N=<N>`로 (재)기동**해야 한다. 이게 "bench-on 부팅"
+  장치이자 **별도-프로세스 모델을 사실상 강제**하는 지점(아래 열린 결정과 직결). rune-mcp 쪽
+  새 코드는 불필요.
 
-이는 메모리에 적힌 **열린 결정**(US-1 harness가 rune-mcp를 별도 프로세스로 구동 vs
-in-process)과 직결된다. 현재 계측이 **slog 로그로 방출**하도록 설계된 것은 사실상
-"별도 프로세스 + 로그 파싱" 모델을 가정한 것이다.
+> **적재 경로 = insert 오염 여부**: reference처럼 **직접 envector**로 적재하면 rune-mcp `Insert`를
+> 안 타 bench 라인이 안 나온다 → insert 구간 오염 없음(boot `OpenIndex` 빈-req 1줄만). 반대로
+> 적재를 rune-mcp **capture로** 하면 `op=…/batch_insert_data` 라인 N개가 측정 통계에 섞이므로,
+> **직접-envector 적재를 권장**한다(그러면 §2.2의 빈-req 분리 부담도 boot 1줄로 줄어든다).
+
+이는 **확정된 결정**(2026-06-18 — US-1 harness는 rune-mcp를 **별도 프로세스**로 구동;
+아키텍처 doc §4)과 직결된다. 현재 계측이 **slog 로그로 방출**하도록 설계된 것은 바로
+그 "별도 프로세스 + 로그 파싱" 모델을 전제한 것이다.
 
 ---
 
