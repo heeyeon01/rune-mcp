@@ -30,9 +30,25 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/bench"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
 )
+
+// withBench returns the interceptor chain for a remote client: the supplied
+// base interceptors, plus the US-1 bench timer appended (innermost, so it
+// times the pure RPC) when RUNE_MCP_BENCH=1. With the toggle off it returns
+// base unchanged — zero added interceptors, identical production behaviour.
+//
+// boot.go is the only place that can assemble this: the bench timer, like
+// recovery, sits next to clients whose construction lives here. Adapter code
+// stays untouched.
+func withBench(seg string, base ...grpc.UnaryClientInterceptor) []grpc.UnaryClientInterceptor {
+	if bench.Enabled() {
+		return append(base, bench.UnaryInterceptor(seg))
+	}
+	return base
+}
 
 // BootAdapterInjector decouples lifecycle from mcp.Deps to break the
 // adapter ↔ handler import cycle. The boot loop pushes adapter clients +
@@ -421,11 +437,9 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	}
 
 	vaultClient, err := vault.NewClient(cfg.Vault.Endpoint, cfg.Vault.Token, vault.ClientOpts{
-		CACertPath: cfg.Vault.CACert,
-		TLSDisable: cfg.Vault.TLSDisable,
-		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("vault", m),
-		},
+		CACertPath:        cfg.Vault.CACert,
+		TLSDisable:        cfg.Vault.TLSDisable,
+		UnaryInterceptors: withBench("vault", recovery.UnaryRecovery("vault", m)),
 	})
 	if err != nil {
 		m.SetState(StateWaitingForVault)
@@ -465,9 +479,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	deps.ApplyVaultBundle(bundle)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
-		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("embedder", m),
-		},
+		UnaryInterceptors: withBench("embedder", recovery.UnaryRecovery("embedder", m)),
 	})
 	if err != nil {
 		m.lastError.Store(fmt.Sprintf("embedder dial: %v", err))
@@ -478,15 +490,13 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	deps.InjectEmbedder(embedderClient)
 
 	envectorClient, err := envector.NewClient(envector.ClientConfig{
-		Endpoint:  bundle.EnvectorEndpoint,
-		APIKey:    bundle.EnvectorAPIKey,
-		KeyPath:   keyDir,
-		KeyID:     bundle.KeyID,
-		KeyDim:    DefaultKeyDim,
-		IndexName: bundle.IndexName,
-		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("envector", m),
-		},
+		Endpoint:          bundle.EnvectorEndpoint,
+		APIKey:            bundle.EnvectorAPIKey,
+		KeyPath:           keyDir,
+		KeyID:             bundle.KeyID,
+		KeyDim:            DefaultKeyDim,
+		IndexName:         bundle.IndexName,
+		UnaryInterceptors: withBench("envector", recovery.UnaryRecovery("envector", m)),
 	})
 	if err != nil {
 		m.lastError.Store(fmt.Sprintf("envector new client: %v", err))
