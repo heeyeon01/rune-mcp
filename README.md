@@ -17,6 +17,8 @@ go build -o rune-mcp ./cmd/rune-mcp   # build the binary
 
 As an MCP server it is normally started over stdio by the agent host rather than run directly.
 
+On macOS, run tests with `TMPDIR=/tmp go test ./...` — the default temp dir produces unix socket paths that exceed the 104-byte limit, failing the spawn tests with `bind: invalid argument`.
+
 ## Layout
 
 ```
