@@ -129,9 +129,12 @@ latency를 귀속**할 수 있다. `측정`열은 그 행을 무엇으로 잡는
   확장쿼리마다(`:151`)+원문 폴백(`:180`)+누락 그룹마다(`:515`=R9) 반복 호출되므로, 한 `req` 안에
   R3~R8 라인이 **searchSingle 호출 횟수만큼 여러 벌** 찍힌다. → `(req, op)`로 묶어 합산·횟수
   집계하면 되고, 개별 호출을 분리할 필요는 없다(중분류로 합치므로).
-- **R3·R5·R7(+R4)은 확장쿼리마다, 다시 R9에서 또 호출**된다(위 `searchSingle` 루프). phase를
-  "recall당 1회"로 가정하면 N-커브가 어긋난다 → 반드시 `req=`로 묶어 **호출 횟수까지** 집계
-  (평균 latency × 호출수).
+- **R3·R5·R7(+R4)은 확장쿼리마다, 다시 R9에서 또 호출**된다(위 `searchSingle` 루프). 즉 한
+  recall이 score를 여러 번 부른다 → **각 호출을 1샘플로(per-call) p50/p95** 낸다(reference도 단일
+  호출 단위라 1:1; runebench 설계서 **D3**). 호출 횟수는 **합산하지 말고** 별도 기록 — 합산하면
+  SDK 비용과 팬아웃 횟수가 섞인다(end-to-end는 `seg=tool` total).
+  → **이 결정의 구체적 예시·로그·집계 흐름은 `us1-per-call-latency-explainer.md` 참고**(R9 보강검색이
+  score 호출 수를 들쭉날쭉하게 만드는 과정을 단계별로 풀어 설명).
 - **R3 `score` ↔ C4 `score`는 같은 `seg=envector op=…/inner_product`**를 방출한다(§2 경고). `op=`만으로는
   recall 본검색과 capture novelty가 한 버킷에 섞이므로 **`req=`로 부모 `seg=tool`(op=recall/capture)에
   join**해 경로를 가른 뒤 집계해야 한다. `vault_topk`도 동일(R4 k=변수 vs C5 k=3).
