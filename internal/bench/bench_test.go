@@ -68,6 +68,35 @@ func TestObserve_EmitsParseableLine(t *testing.T) {
 	}
 }
 
+// Contract 2b — k tagging. The vault adapter tags ctx via WithK so the
+// bimodal vault_topk curve (main search vs larger boost search) can be split
+// by top-K downstream. A tagged ctx must render k=; the value is appended, so
+// existing field consumers are unaffected.
+func TestObserve_EmitsKWhenTagged(t *testing.T) {
+	t.Setenv("RUNE_MCP_BENCH", "1")
+	read := captureLogs(t)
+
+	ctx := WithK(context.Background(), 20)
+	Observe(ctx, "vault", "/rune.vault.v1.VaultService/DecryptScores", time.Now(), nil)
+
+	if out := read(); !strings.Contains(out, " k=20") {
+		t.Errorf("tagged ctx must render k=20, got: %q", out)
+	}
+}
+
+// An untagged ctx (every non-vault segment) must NOT render k=, so the field
+// stays exclusive to vault_topk and downstream defaults it to k=-1.
+func TestObserve_NoKWhenUntagged(t *testing.T) {
+	t.Setenv("RUNE_MCP_BENCH", "1")
+	read := captureLogs(t)
+
+	Observe(context.Background(), "embedder", "/runed.v1.RunedService/Embed", time.Now(), nil)
+
+	if out := read(); strings.Contains(out, " k=") {
+		t.Errorf("untagged ctx must not render k=, got: %q", out)
+	}
+}
+
 // n defaults to -1 when the sweep var is unset, so an out-of-sweep bench line
 // is still self-describing rather than silently dropping the x-axis value.
 func TestObserve_NDefaultsToMinusOne(t *testing.T) {

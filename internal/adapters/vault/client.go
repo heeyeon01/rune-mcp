@@ -26,6 +26,7 @@ import (
 	"time"
 
 	vaultpb "github.com/CryptoLabInc/rune-admin/vault/pkg/vaultpb"
+	"github.com/CryptoLabInc/rune-mcp/internal/bench"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -237,6 +238,14 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 func (c *client) DecryptScores(ctx context.Context, encryptedBlobB64 string, topK int) ([]ScoreEntry, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
+
+	// Tag the ctx so the bench UnaryInterceptor can stamp k= on the vault_topk
+	// line. This single choke point covers every DecryptScores caller (recall
+	// main/boost search, capture novelty), so no service-layer call site needs
+	// to know about instrumentation. Guarded so prod (bench off) pays nothing.
+	if bench.Enabled() {
+		ctx = bench.WithK(ctx, topK)
+	}
 
 	resp, err := c.stub.DecryptScores(ctx, &vaultpb.DecryptScoresRequest{
 		Token:            c.token,
