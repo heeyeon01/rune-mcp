@@ -137,7 +137,7 @@ func TestInsert_HappyPath(t *testing.T) {
 		}
 		return &vaultpb.InsertResponse{Id: "id-xyz"}, nil
 	}
-	id, err := c.Insert(context.Background(), []float32{0.1, 0.2, 0.3}, `{"t":1}`)
+	id, err := c.Insert(context.Background(), []float32{0.1, 0.2, 0.3}, `{"t":1}`, nil)
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestInsert_ResponseError(t *testing.T) {
 	fake.insertFn = func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
 		return &vaultpb.InsertResponse{Error: "insert failed"}, nil
 	}
-	_, err := c.Insert(context.Background(), []float32{1}, "")
+	_, err := c.Insert(context.Background(), []float32{1}, "", nil)
 	if err == nil || !strings.Contains(err.Error(), "insert failed") {
 		t.Fatalf("want insert error, got %v", err)
 	}

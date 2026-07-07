@@ -133,12 +133,16 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 	}
 
 	// Phase 6: insert each record via the vault (vault encrypts + seals + stores).
+	// req.ShareGroups (plan §6-D6) is the caller's DIRECT-group selection; the
+	// vault resolves + validates it and injects the opaque group tags. Empty means
+	// the vault tags with all of the caller's direct write-capable groups. Every
+	// phase-record of one capture shares the same selection.
 	for i := range records {
 		body, err := json.Marshal(records[i])
 		if err != nil {
 			return nil, fmt.Errorf("marshal record %d: %w", i, err)
 		}
-		if _, err := insertWithRecovery(ctx, s.State, s.Vault, vectors[i], string(body)); err != nil {
+		if _, err := insertWithRecovery(ctx, s.State, s.Vault, vectors[i], string(body), req.ShareGroups); err != nil {
 			return nil, fmt.Errorf("vault insert: %w", err)
 		}
 	}

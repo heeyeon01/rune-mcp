@@ -28,6 +28,7 @@ var expectedTools = []string{
 	"capture_history",
 	"configure",
 	"diagnostics",
+	"permissions",
 	"recall",
 	"reload_pipelines",
 	"vault_status",

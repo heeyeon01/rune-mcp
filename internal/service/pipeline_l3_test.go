@@ -61,7 +61,7 @@ func TestPipelineL3(t *testing.T) {
 		"reusable_insight": insight,
 		"domain":           "architecture",
 	})
-	id, err := vc.Insert(ctx, vec, string(meta))
+	id, err := vc.Insert(ctx, vec, string(meta), nil)
 	if err != nil {
 		t.Fatalf("vault.Insert: %v", err)
 	}

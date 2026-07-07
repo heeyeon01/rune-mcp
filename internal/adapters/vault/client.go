@@ -6,8 +6,9 @@
 //
 // Responsibility:
 //   - GetAgentManifest: fetch agent config (no keys)
-//   - Insert: send a plaintext embedding + metadata; vault encrypts + seals + stores
+//   - Insert: send a plaintext embedding + metadata (+ optional share_groups); vault encrypts + seals + stores
 //   - Search: send a plaintext query; vault searches + decrypts + opens metadata
+//   - GetPermissions: fetch the caller's RBAC view (memberships + reachable group tree)
 package vault
 
 import (
@@ -72,11 +73,51 @@ type Hit struct {
 	Metadata string
 }
 
+// Permissions is the caller's RBAC view returned by GetPermissions
+// (rune-admin plan §6-D8). The vault owns policy; this is a read-only
+// projection of it for the caller's own token.
+type Permissions struct {
+	Me          string       // caller email (the person key, plan §0)
+	Memberships []Membership // the caller's DIRECT (group, role) bindings
+	Tree        []GroupNode  // groups reachable by effective role, depth-annotated
+	MemberRoles []MemberRole // org-wide listing; populated only for admin + includeMemberRoles
+}
+
+// Membership is one direct (group, role) binding the caller holds.
+type Membership struct {
+	GroupID   string
+	GroupName string
+	Role      string // read | write | edit
+}
+
+// GroupNode is one group the caller can reach by effective role (recall scope),
+// depth-annotated within the group tree.
+type GroupNode struct {
+	GroupID       string
+	Name          string
+	ParentID      string // empty for a root group
+	Depth         int    // 0 = root of the group tree
+	EffectiveRole string
+}
+
+// MemberRole is one org-wide (user, group, role) row (admin-only listing).
+type MemberRole struct {
+	User      string // email
+	GroupID   string
+	GroupName string
+	Role      string
+}
+
 // Client interface — implemented by gRPC client (and test mocks).
 type Client interface {
 	GetAgentManifest(ctx context.Context) (*Bundle, error)
-	Insert(ctx context.Context, vector []float32, metadata string) (string, error)
+	Insert(ctx context.Context, vector []float32, metadata string, shareGroups []string) (string, error)
 	Search(ctx context.Context, vector []float32, topK int) ([]Hit, error)
+	// GetPermissions returns the caller's memberships + depth-annotated reachable
+	// group tree. rootGroup (optional) restricts the tree to that group's subtree;
+	// includeMemberRoles requests the org-wide per-user listing (admin only —
+	// a non-admin request is denied by the vault, surfaced as PermissionDenied).
+	GetPermissions(ctx context.Context, rootGroup string, includeMemberRoles bool) (*Permissions, error)
 	HealthCheck(ctx context.Context) (bool, error)
 	Endpoint() string
 	Close() error
@@ -181,14 +222,20 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 	return ParseManifestJSON(resp.GetManifestJson())
 }
 
-func (c *client) Insert(ctx context.Context, vector []float32, metadata string) (string, error) {
+// Insert sends a plaintext embedding + metadata for the vault to encrypt, seal
+// and store. shareGroups (plan §6-D6) are the caller's DIRECT groups to tag the
+// item with; empty means "all of the caller's direct write-capable groups". The
+// vault resolves, validates (rejecting inherited descendant groups) and injects
+// the tags — rune-mcp passes the raw selection through untrusted.
+func (c *client) Insert(ctx context.Context, vector []float32, metadata string, shareGroups []string) (string, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
 	resp, err := c.stub.Insert(ctx, &vaultpb.InsertRequest{
-		Token:    c.token,
-		Vector:   vector,
-		Metadata: metadata,
+		Token:       c.token,
+		Vector:      vector,
+		Metadata:    metadata,
+		ShareGroups: shareGroups,
 	})
 	if err != nil {
 		return "", MapGRPCError(err)
@@ -217,6 +264,50 @@ func (c *client) Search(ctx context.Context, vector []float32, topK int) ([]Hit,
 	out := make([]Hit, 0, len(resp.GetHits()))
 	for _, h := range resp.GetHits() {
 		out = append(out, Hit{ID: h.GetId(), Score: h.GetScore(), Metadata: h.GetMetadata()})
+	}
+	return out, nil
+}
+
+func (c *client) GetPermissions(ctx context.Context, rootGroup string, includeMemberRoles bool) (*Permissions, error) {
+	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
+	defer cancel()
+
+	resp, err := c.stub.GetPermissions(ctx, &vaultpb.GetPermissionsRequest{
+		Token:              c.token,
+		RootGroup:          rootGroup,
+		IncludeMemberRoles: includeMemberRoles,
+	})
+	if err != nil {
+		return nil, MapGRPCError(err)
+	}
+	if msg := resp.GetError(); msg != "" {
+		return nil, &Error{Code: ErrVaultInternal.Code, Message: "GetPermissions: " + msg, Retryable: true}
+	}
+
+	out := &Permissions{Me: resp.GetMe()}
+	for _, m := range resp.GetMemberships() {
+		out.Memberships = append(out.Memberships, Membership{
+			GroupID:   m.GetGroupId(),
+			GroupName: m.GetGroupName(),
+			Role:      m.GetRole(),
+		})
+	}
+	for _, n := range resp.GetTree() {
+		out.Tree = append(out.Tree, GroupNode{
+			GroupID:       n.GetGroupId(),
+			Name:          n.GetName(),
+			ParentID:      n.GetParentId(),
+			Depth:         int(n.GetDepth()),
+			EffectiveRole: n.GetEffectiveRole(),
+		})
+	}
+	for _, mr := range resp.GetMemberRoles() {
+		out.MemberRoles = append(out.MemberRoles, MemberRole{
+			User:      mr.GetUser(),
+			GroupID:   mr.GetGroupId(),
+			GroupName: mr.GetGroupName(),
+			Role:      mr.GetRole(),
+		})
 	}
 	return out, nil
 }

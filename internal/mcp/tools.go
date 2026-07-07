@@ -1,4 +1,4 @@
-// Package mcp wires the 10 MCP tool handlers onto the official Go SDK and
+// Package mcp wires the MCP tool handlers onto the official Go SDK and
 // owns Deps injection + state-aware response shaping.
 //
 // Spec:
@@ -30,7 +30,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// Deps — injected into all 10 MCP handlers.
+// Deps — injected into all MCP handlers.
 //
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
@@ -122,7 +122,7 @@ func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds all 10 MCP tools onto the provided SDK server.
+// Register binds all MCP tools onto the provided SDK server.
 //
 // Tool names are bit-identical to Python `mcp/server/server.py`. SDK sorts
 // tools alphabetically in `tools/list` output, so order here is for readability.
@@ -168,6 +168,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, "capture_history",
 		"List recent captures from local capture_log.jsonl (read-only).",
 		handleCaptureHistory(deps))
+	mustAdd(srv, "permissions",
+		"Show your RBAC permissions: your group memberships and the depth-annotated group tree you can recall from (effective role). Organization admin may pass include_member_roles for the org-wide (user, group, role) listing.",
+		handlePermissions(deps))
 	mustAdd(srv, "vault_status",
 		"Probe Vault connectivity and report secure-search mode.",
 		handleVaultStatus(deps))

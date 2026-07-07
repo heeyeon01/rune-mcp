@@ -491,8 +491,11 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 		return nil, fmt.Errorf("delete: marshal: %w", err)
 	}
 
-	// Re-insert via the vault (vault encrypts + seals + stores).
-	if _, err := s.Vault.Insert(ctx, vec, string(body)); err != nil {
+	// Re-insert via the vault (vault encrypts + seals + stores). Soft-delete
+	// re-tagging (preserving the record's original share groups) is an M6/UpdateTags
+	// concern — out of scope here, and delete_capture is gated out this release — so
+	// share_groups is nil (vault applies its default tagging).
+	if _, err := s.Vault.Insert(ctx, vec, string(body), nil); err != nil {
 		return nil, fmt.Errorf("delete: re-insert: %w", err)
 	}
 
@@ -992,4 +995,99 @@ func (s *LifecycleService) warmupEnvector(ctx context.Context, timeout time.Dura
 	}
 
 	return &WarmupInfo{OK: true, LatencyMs: &elapsed}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. rune_permissions — read-only RBAC query (requirement 4, plan §6-D8).
+//
+// Returns the caller's own memberships and the depth-annotated group tree they
+// can recall from (effective role, inheritance resolved by the vault). The vault
+// owns policy; this tool is a read-only projection for the caller's token. An
+// organization admin may pass include_member_roles for the org-wide (user,
+// group, role) listing — a non-admin request for it is denied by the vault
+// (PermissionDenied, plan §D11).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PermissionsArgs — input for the `permissions` tool.
+type PermissionsArgs struct {
+	RootGroup          string `json:"root_group,omitempty" jsonschema:"Optional group id or name; restrict the returned tree to that group's subtree. Empty = the full tree you can reach."`
+	IncludeMemberRoles bool   `json:"include_member_roles,omitempty" jsonschema:"Organization admin only. When true, include the org-wide per-user (group, role) listing. A non-admin request is denied."`
+}
+
+// PermissionsResult — the caller's RBAC view. Field shape mirrors the backend
+// API contract (rbac-backend-api-draft.md §1 GetPermissions).
+type PermissionsResult struct {
+	OK          bool                   `json:"ok"`
+	Me          string                 `json:"me"`
+	Memberships []PermissionMembership `json:"memberships"`
+	Tree        []PermissionTreeNode   `json:"tree"`
+	MemberRoles []PermissionMemberRole `json:"member_roles,omitempty"`
+}
+
+// PermissionMembership — one direct (group, role) binding the caller holds.
+type PermissionMembership struct {
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+	Role      string `json:"role"`
+}
+
+// PermissionTreeNode — one reachable group, depth-annotated.
+type PermissionTreeNode struct {
+	GroupID       string `json:"group_id"`
+	Name          string `json:"name"`
+	ParentID      string `json:"parent_id,omitempty"`
+	Depth         int    `json:"depth"`
+	EffectiveRole string `json:"effective_role"`
+}
+
+// PermissionMemberRole — one org-wide (user, group, role) row (admin listing).
+type PermissionMemberRole struct {
+	User      string `json:"user"`
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+	Role      string `json:"role"`
+}
+
+// Permissions queries the vault for the caller's RBAC view. Read-only: it
+// bypasses the pipeline state gate (like vault_status), but does require a wired
+// vault — in standard (no-Vault) mode there is no policy to report.
+func (s *LifecycleService) Permissions(ctx context.Context, args PermissionsArgs) (*PermissionsResult, error) {
+	if s.Vault == nil {
+		return nil, &domain.RuneError{
+			Code:    domain.CodeVaultConnection,
+			Message: "permissions requires a configured Vault (secure mode); none is wired. Run /rune:configure then /rune:activate.",
+		}
+	}
+
+	perms, err := s.Vault.GetPermissions(ctx, args.RootGroup, args.IncludeMemberRoles)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &PermissionsResult{OK: true, Me: perms.Me}
+	for _, m := range perms.Memberships {
+		res.Memberships = append(res.Memberships, PermissionMembership{
+			GroupID:   m.GroupID,
+			GroupName: m.GroupName,
+			Role:      m.Role,
+		})
+	}
+	for _, n := range perms.Tree {
+		res.Tree = append(res.Tree, PermissionTreeNode{
+			GroupID:       n.GroupID,
+			Name:          n.Name,
+			ParentID:      n.ParentID,
+			Depth:         n.Depth,
+			EffectiveRole: n.EffectiveRole,
+		})
+	}
+	for _, mr := range perms.MemberRoles {
+		res.MemberRoles = append(res.MemberRoles, PermissionMemberRole{
+			User:      mr.User,
+			GroupID:   mr.GroupID,
+			GroupName: mr.GroupName,
+			Role:      mr.Role,
+		})
+	}
+	return res, nil
 }
