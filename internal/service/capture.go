@@ -210,10 +210,15 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 		// RenderPayloadText actually embed (e.g. {group_title, phases} or a
 		// phase-only item with no top-level title is accepted, exactly as in
 		// single capture; the {text, extracted} wrapper is rejected).
+		// share_groups is batch-level: the same DIRECT-group selection is applied
+		// to every item, mirroring single capture (per-item scoping is not read).
+		// Handle threads it to the vault insert — including the recovery retry —
+		// unvalidated; the vault resolves + validates (see Handle Phase 6).
 		req := &domain.CaptureRequest{
-			Text:      "",
-			Source:    args.Source,
-			Extracted: item,
+			Text:        "",
+			Source:      args.Source,
+			ShareGroups: args.ShareGroups,
+			Extracted:   item,
 		}
 		if args.User != nil {
 			req.User = *args.User
@@ -333,10 +338,11 @@ func buildRelatedTop3(hits []vault.Hit) []domain.RelatedRecord {
 // guess (a [{text, extracted}, ...] wrapper). Keep them in sync with the
 // runtime validation error in Batch (capture.go).
 type BatchCaptureArgs struct {
-	Items   string  `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
-	Source  string  `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
-	User    *string `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
-	Channel *string `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
+	Items       string   `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
+	Source      string   `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
+	User        *string  `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
+	Channel     *string  `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
+	ShareGroups []string `json:"share_groups,omitempty" jsonschema:"Optional. Batch-level; applied to every item in this batch (per-item share_groups is not read). Which of YOUR DIRECT groups (you must be a member with write or higher) to share these captures with — only members whose recall scope includes one of these groups will find them. Empty = all of your direct write-capable groups. Inherited (descendant) groups are not valid choices: a superior group's memory must never leak downward. The Vault resolves and validates these names/ids and rejects any group you are not directly a write member of."`
 }
 
 // BatchCaptureResult — aggregated response.
