@@ -30,6 +30,7 @@ var expectedTools = []string{
 	"diagnostics",
 	"permissions",
 	"recall",
+	"redeem_invite",
 	"reload_pipelines",
 	"vault_status",
 }

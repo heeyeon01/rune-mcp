@@ -27,6 +27,22 @@ type fakeServer struct {
 	insertFn           func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error)
 	searchFn           func(*vaultpb.SearchRequest) (*vaultpb.SearchResponse, error)
 	healthFn           func(*healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error)
+	lookupWrapFn       func(*vaultpb.LookupWrapRequest) (*vaultpb.LookupWrapResponse, error)
+	unwrapFn           func(*vaultpb.UnwrapRequest) (*vaultpb.UnwrapResponse, error)
+}
+
+func (f *fakeServer) LookupWrap(_ context.Context, req *vaultpb.LookupWrapRequest) (*vaultpb.LookupWrapResponse, error) {
+	if f.lookupWrapFn != nil {
+		return f.lookupWrapFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: LookupWrap not stubbed")
+}
+
+func (f *fakeServer) Unwrap(_ context.Context, req *vaultpb.UnwrapRequest) (*vaultpb.UnwrapResponse, error) {
+	if f.unwrapFn != nil {
+		return f.unwrapFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: Unwrap not stubbed")
 }
 
 func (f *fakeServer) GetAgentManifest(_ context.Context, req *vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {

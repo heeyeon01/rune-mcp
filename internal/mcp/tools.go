@@ -180,6 +180,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, "configure",
 		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
 		handleConfigure(deps))
+	mustAdd(srv, "redeem_invite",
+		"Exchange a one-time invite code (from the invite mail) for Vault credentials. Two-phase: first call WITHOUT confirm — it only pre-validates and returns who the invite is for (email/role/expiry); show that to the user. Only after the user agrees, call again with confirm=true: that consumes the code, writes the released token straight to $HOME/.rune/config.json (the token is never returned) and marks state=active. Pass overwrite=true only to replace an existing credential.",
+		handleRedeemInvite(deps))
 	mustAdd(srv, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
 		handleActivate(deps))

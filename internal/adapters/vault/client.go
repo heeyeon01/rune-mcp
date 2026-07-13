@@ -149,6 +149,24 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 		return nil, fmt.Errorf("vault: invalid endpoint: %w", err)
 	}
 
+	dialOpts, err := buildDialOpts(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := grpc.NewClient(normalized, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("vault: grpc dial failed: %w", err)
+	}
+
+	slog.Info("vault: connected", "endpoint", normalized)
+	return newWithConn(normalized, token, conn), nil
+}
+
+// buildDialOpts assembles the dial options shared by NewClient and
+// NewRedeemer: message-size caps, keepalive, optional interceptors, and the
+// TLS/CA selection (explicit CA pin > system bundle; TLSDisable is dev-only).
+func buildDialOpts(opts ClientOpts) ([]grpc.DialOption, error) {
 	dialOpts := []grpc.DialOption{
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(MaxMessageLength),
@@ -173,14 +191,7 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 	default:
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(nil)))
 	}
-
-	conn, err := grpc.NewClient(normalized, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("vault: grpc dial failed: %w", err)
-	}
-
-	slog.Info("vault: connected", "endpoint", normalized)
-	return newWithConn(normalized, token, conn), nil
+	return dialOpts, nil
 }
 
 // NewBufconnClient wraps an existing *grpc.ClientConn for tests.

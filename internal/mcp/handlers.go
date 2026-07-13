@@ -152,3 +152,14 @@ func handleReloadPipelines(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.
 		return okResult(out), *out, nil
 	}
 }
+
+func handleRedeemInvite(deps *Deps) sdkmcp.ToolHandlerFor[service.RedeemInviteArgs, service.RedeemInviteResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.RedeemInviteArgs) (*sdkmcp.CallToolResult, service.RedeemInviteResult, error) {
+		var zero service.RedeemInviteResult
+		out, err := deps.Lifecycle.RedeemInvite(ctx, in) // token is written to config.json inside the service, never returned
+		if err != nil {
+			return errorResult(err), zero, nil
+		}
+		return okResult(out), *out, nil
+	}
+}
