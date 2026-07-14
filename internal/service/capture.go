@@ -68,12 +68,12 @@ func NewCaptureService() *CaptureService {
 // no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
 // the item under the new set (fresh cluster_id + version, same id), and retry
 // exactly once.
-func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
+func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string, shareGroups []string) (string, error) {
 	if s.Encryptor == nil {
 		return "", fmt.Errorf("capture: encryptor not initialized")
 	}
 	id := uuid.NewString()
-	item, err := s.buildInsertItem(ctx, id, text, metadataJSON)
+	item, err := s.buildInsertItem(ctx, id, text, metadataJSON, shareGroups)
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +87,7 @@ func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJS
 	if rerr := s.resyncCentroids(ctx); rerr != nil {
 		return "", fmt.Errorf("insert rejected (%w) and centroid resync failed: %w", err, rerr)
 	}
-	item, err = s.buildInsertItem(ctx, id, text, metadataJSON)
+	item, err = s.buildInsertItem(ctx, id, text, metadataJSON, shareGroups)
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +99,7 @@ func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJS
 // given idempotent id. On runed FAILED_PRECONDITION (no centroid set — C4,
 // e.g. the best-effort boot relay failed or runed restarted with a cold cache)
 // it pushes the set once and retries the route.
-func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (vault.InsertItem, error) {
+func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string, shareGroups []string) (vault.InsertItem, error) {
 	routed, err := s.Embedder.EmbedRoute(ctx, text)
 	if isNoCentroids(err) {
 		slog.Warn("capture: runed has no centroid set; resyncing and retrying once")
@@ -130,6 +130,7 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 		ClusterID:          routed.ClusterID,
 		CentroidSetVersion: routed.CentroidSetVersion,
 		SealedMetadata:     sealed,
+		ShareGroups:        shareGroups,
 	}, nil
 }
 
@@ -224,7 +225,7 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		if err != nil {
 			return nil, fmt.Errorf("marshal record %d: %w", i, err)
 		}
-		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
+		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body), req.ShareGroups); err != nil {
 			return nil, fmt.Errorf("vault insert %d: %w", i, err)
 		}
 	}
@@ -293,9 +294,10 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 		// phase-only item with no top-level title is accepted, exactly as in
 		// single capture; the {text, extracted} wrapper is rejected).
 		req := &domain.CaptureRequest{
-			Text:      "",
-			Source:    args.Source,
-			Extracted: item,
+			Text:        "",
+			Source:      args.Source,
+			ShareGroups: args.ShareGroups,
+			Extracted:   item,
 		}
 		if args.User != nil {
 			req.User = *args.User
@@ -415,10 +417,11 @@ func buildRelatedTop3(hits []vault.Hit) []domain.RelatedRecord {
 // guess (a [{text, extracted}, ...] wrapper). Keep them in sync with the
 // runtime validation error in Batch (capture.go).
 type BatchCaptureArgs struct {
-	Items   string  `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
-	Source  string  `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
-	User    *string `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
-	Channel *string `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
+	Items       string   `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
+	Source      string   `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
+	User        *string  `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
+	Channel     *string  `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
+	ShareGroups []string `json:"share_groups,omitempty" jsonschema:"Optional. Batch-level; applied to every item (per-item share_groups is not read). Which of YOUR DIRECT write-capable groups to share these captures with — only members whose recall scope includes one of these groups will find them. Empty = all of your direct write groups. Inherited (descendant) groups are not valid: a superior group's memory must never leak downward. The Vault resolves/validates and rejects any group you are not a direct write member of."`
 }
 
 // BatchCaptureResult — aggregated response.

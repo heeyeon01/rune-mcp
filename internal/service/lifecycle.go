@@ -426,7 +426,7 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 	if capSvc == nil {
 		return nil, fmt.Errorf("delete: capture service required for re-insert")
 	}
-	if _, err := capSvc.EncryptSealInsert(ctx, embedText, string(body)); err != nil {
+	if _, err := capSvc.EncryptSealInsert(ctx, embedText, string(body), nil); err != nil {
 		return nil, fmt.Errorf("delete: re-insert: %w", err)
 	}
 

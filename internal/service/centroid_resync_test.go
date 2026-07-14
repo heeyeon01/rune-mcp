@@ -95,7 +95,7 @@ func TestEncryptSealInsert_C4_ColdRunedSelfHeals(t *testing.T) {
 	v := &resyncVault{engineVersion: "v1"}
 	s := newResyncService(e, v)
 
-	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`)
+	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`, nil)
 	if err != nil {
 		t.Fatalf("want self-heal, got error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestEncryptSealInsert_C4_ResyncFailureSurfaces(t *testing.T) {
 	v := &resyncVault{engineVersion: "v1"}
 	s := newResyncService(e, v)
 
-	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`); err == nil {
+	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`, nil); err == nil {
 		t.Fatal("want error when resync fails, got nil")
 	}
 	if e.pushCalls != 1 || e.routeCalls != 1 {
@@ -132,7 +132,7 @@ func TestEncryptSealInsert_C3_VersionSwapSelfHeals(t *testing.T) {
 	v := &resyncVault{engineVersion: "v2"}  // engine swapped to v2
 	s := newResyncService(e, v)
 
-	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`)
+	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`, nil)
 	if err != nil {
 		t.Fatalf("want self-heal, got error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestEncryptSealInsert_C3_SecondRejectionSurfaces(t *testing.T) {
 	v := &resyncVault{engineVersion: "v2"}
 	s := newResyncService(e, v)
 
-	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`); err == nil {
+	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`, nil); err == nil {
 		t.Fatal("want error after single failed retry, got nil")
 	}
 	if v.insertCalls != 2 {
