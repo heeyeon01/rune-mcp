@@ -53,6 +53,9 @@ func (v *resyncVault) Search(context.Context, []float32, int) ([]vault.Hit, erro
 func (v *resyncVault) HealthCheck(context.Context) (bool, error) { return true, nil }
 func (v *resyncVault) Endpoint() string                          { return "fake" }
 func (v *resyncVault) Close() error                              { return nil }
+func (v *resyncVault) GetPermissions(context.Context, string, bool) (*vault.Permissions, error) {
+	return nil, nil
+}
 
 func (v *resyncVault) Centroids(context.Context) (*vault.CentroidSet, error) {
 	if v.centroidsErr != nil {

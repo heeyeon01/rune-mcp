@@ -115,6 +115,11 @@ type InsertItem struct {
 	ClusterID          uint32
 	CentroidSetVersion string
 	SealedMetadata     string // client-sealed {"a","c"} envelope
+	// ShareGroups is the caller's capture-time group selection (plan §6-D6): the
+	// DIRECT groups (role >= write) to tag this item with. Empty = all of the
+	// caller's direct write groups. Plaintext — the Vault reads these to compute
+	// the runespace filter tags; never sealed into the metadata envelope.
+	ShareGroups []string
 }
 
 // CentroidSet is the relayed IVF centroid set (runespace -> vault -> here).
@@ -133,6 +138,7 @@ type Client interface {
 	Insert(ctx context.Context, item InsertItem) (string, error)
 	Search(ctx context.Context, vector []float32, topK int) ([]Hit, error)
 	Centroids(ctx context.Context) (*CentroidSet, error)
+	GetPermissions(ctx context.Context, rootGroup string, includeMemberRoles bool) (*Permissions, error)
 	HealthCheck(ctx context.Context) (bool, error)
 	Endpoint() string
 	Close() error
@@ -249,6 +255,7 @@ func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {
 		ClusterId:          item.ClusterID,
 		CentroidSetVersion: item.CentroidSetVersion,
 		Metadata:           item.SealedMetadata,
+		ShareGroups:        item.ShareGroups,
 	})
 	if err != nil {
 		return "", MapGRPCError(err)
@@ -257,6 +264,85 @@ func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {
 		return "", &Error{Code: ErrVaultInternal.Code, Message: "Insert: " + msg, Retryable: true}
 	}
 	return resp.GetId(), nil
+}
+
+// Permissions is the caller's authorization view (GetPermissions).
+type Permissions struct {
+	Me          string       // caller email (the person key)
+	Memberships []Membership // the caller's DIRECT (group, role) bindings
+	Tree        []GroupNode  // groups reachable by effective role, depth-annotated
+	MemberRoles []MemberRole // org-wide listing; admin + includeMemberRoles only
+}
+
+// Membership is one direct (group, role) binding the caller holds.
+type Membership struct {
+	GroupID   string
+	GroupName string
+	Role      string // read | write | edit
+}
+
+// GroupNode is one group the caller can reach by effective role (recall scope),
+// depth-annotated within the group tree.
+type GroupNode struct {
+	GroupID       string
+	Name          string
+	ParentID      string // empty for a root group
+	Depth         int    // 0 = root of the group tree
+	EffectiveRole string
+}
+
+// MemberRole is one org-wide (user, group, role) row (admin-only listing).
+type MemberRole struct {
+	User      string // email
+	GroupID   string
+	GroupName string
+	Role      string
+}
+
+// GetPermissions returns the caller's memberships + reachable group tree (and,
+// for the org admin with includeMemberRoles, the org-wide member-roles listing).
+func (c *client) GetPermissions(ctx context.Context, rootGroup string, includeMemberRoles bool) (*Permissions, error) {
+	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
+	defer cancel()
+
+	resp, err := c.stub.GetPermissions(ctx, &vaultpb.GetPermissionsRequest{
+		Token:              c.token,
+		RootGroup:          rootGroup,
+		IncludeMemberRoles: includeMemberRoles,
+	})
+	if err != nil {
+		return nil, MapGRPCError(err)
+	}
+	if msg := resp.GetError(); msg != "" {
+		return nil, &Error{Code: ErrVaultInternal.Code, Message: "GetPermissions: " + msg, Retryable: true}
+	}
+
+	out := &Permissions{Me: resp.GetMe()}
+	for _, m := range resp.GetMemberships() {
+		out.Memberships = append(out.Memberships, Membership{
+			GroupID:   m.GetGroupId(),
+			GroupName: m.GetGroupName(),
+			Role:      m.GetRole(),
+		})
+	}
+	for _, n := range resp.GetTree() {
+		out.Tree = append(out.Tree, GroupNode{
+			GroupID:       n.GetGroupId(),
+			Name:          n.GetName(),
+			ParentID:      n.GetParentId(),
+			Depth:         int(n.GetDepth()),
+			EffectiveRole: n.GetEffectiveRole(),
+		})
+	}
+	for _, mr := range resp.GetMemberRoles() {
+		out.MemberRoles = append(out.MemberRoles, MemberRole{
+			User:      mr.GetUser(),
+			GroupID:   mr.GetGroupId(),
+			GroupName: mr.GetGroupName(),
+			Role:      mr.GetRole(),
+		})
+	}
+	return out, nil
 }
 
 // Centroids pulls the relayed IVF centroid set (header + id-ordered batches).
