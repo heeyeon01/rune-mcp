@@ -40,10 +40,11 @@ func (e *resyncEmbedder) SetCentroids(_ context.Context, version string, _ int, 
 // resyncVault simulates the vault relay: Centroids serves engineVersion, and
 // Insert rejects items routed against any other version with the C3 error.
 type resyncVault struct {
-	engineVersion string
-	centroidsErr  error
-	insertCalls   int
-	insertedIDs   []string
+	engineVersion       string
+	centroidsErr        error
+	insertCalls         int
+	insertedIDs         []string
+	insertedShareGroups [][]string // one entry per Insert, in call order
 }
 
 func (v *resyncVault) GetAgentManifest(context.Context) (*vault.Bundle, error) { return nil, nil }
@@ -67,6 +68,7 @@ func (v *resyncVault) Centroids(context.Context) (*vault.CentroidSet, error) {
 func (v *resyncVault) Insert(_ context.Context, item vault.InsertItem) (string, error) {
 	v.insertCalls++
 	v.insertedIDs = append(v.insertedIDs, item.ID)
+	v.insertedShareGroups = append(v.insertedShareGroups, item.ShareGroups)
 	if item.CentroidSetVersion != v.engineVersion {
 		return "", &vault.Error{Code: vault.ErrVaultWrongCentroidVersion.Code, Message: "WRONG_CENTROID_VERSION: stale"}
 	}
@@ -85,6 +87,31 @@ func newResyncService(e embedder.Client, v *resyncVault) *CaptureService {
 		Encryptor: noopEncryptor{},
 		AgentID:   "agent-test",
 		AgentDEK:  bytes.Repeat([]byte{7}, 32),
+	}
+}
+
+// The capture-time group selection must ride onto the forwarded vault item
+// (M3): EncryptSealInsert(…, shareGroups) → buildInsertItem → InsertItem.ShareGroups.
+func TestEncryptSealInsert_ThreadsShareGroups(t *testing.T) {
+	e := &resyncEmbedder{version: "v1"} // warm: route succeeds first try
+	v := &resyncVault{engineVersion: "v1"}
+	s := newResyncService(e, v)
+
+	groups := []string{"g-platform", "g-research"}
+	if _, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`, groups); err != nil {
+		t.Fatalf("EncryptSealInsert: %v", err)
+	}
+	if len(v.insertedShareGroups) != 1 {
+		t.Fatalf("vault Insert calls: got %d, want 1", len(v.insertedShareGroups))
+	}
+	got := v.insertedShareGroups[0]
+	if len(got) != len(groups) {
+		t.Fatalf("share_groups not threaded to InsertItem: got %v, want %v", got, groups)
+	}
+	for i := range groups {
+		if got[i] != groups[i] {
+			t.Errorf("share_groups[%d] = %q, want %q", i, got[i], groups[i])
+		}
 	}
 }
 
