@@ -30,6 +30,7 @@ type fakeServer struct {
 	getCentroidsFn     func(vaultpb.VaultService_GetCentroidsServer) error
 	lookupWrapFn       func(*vaultpb.LookupWrapRequest) (*vaultpb.LookupWrapResponse, error)
 	unwrapFn           func(*vaultpb.UnwrapRequest) (*vaultpb.UnwrapResponse, error)
+	getPermissionsFn   func(*vaultpb.GetPermissionsRequest) (*vaultpb.GetPermissionsResponse, error)
 }
 
 func (f *fakeServer) GetAgentManifest(_ context.Context, req *vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
@@ -65,6 +66,58 @@ func (f *fakeServer) Unwrap(_ context.Context, req *vaultpb.UnwrapRequest) (*vau
 		return f.unwrapFn(req)
 	}
 	return nil, status.Error(codes.Unimplemented, "test server: Unwrap not stubbed")
+}
+
+func (f *fakeServer) GetPermissions(_ context.Context, req *vaultpb.GetPermissionsRequest) (*vaultpb.GetPermissionsResponse, error) {
+	if f.getPermissionsFn != nil {
+		return f.getPermissionsFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: GetPermissions not stubbed")
+}
+
+// GetPermissions maps the gRPC response (token + root_group + include flag in,
+// memberships/tree/member_roles out) onto the client's Permissions view.
+func TestGetPermissions_MapsResponse(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getPermissionsFn = func(req *vaultpb.GetPermissionsRequest) (*vaultpb.GetPermissionsResponse, error) {
+		if req.GetToken() != "test-token" || req.GetRootGroup() != "eng" || !req.GetIncludeMemberRoles() {
+			t.Errorf("request mismatch: %+v", req)
+		}
+		return &vaultpb.GetPermissionsResponse{
+			Me:          "kim@example.com",
+			Memberships: []*vaultpb.MembershipEntry{{GroupId: "g1", GroupName: "eng", Role: "write"}},
+			Tree: []*vaultpb.TreeNode{
+				{GroupId: "g1", Name: "eng", ParentId: "", Depth: 0, EffectiveRole: "write"},
+			},
+			MemberRoles: []*vaultpb.MemberRole{{User: "lee@example.com", GroupId: "g1", GroupName: "eng", Role: "read"}},
+		}, nil
+	}
+	perms, err := c.GetPermissions(context.Background(), "eng", true)
+	if err != nil {
+		t.Fatalf("GetPermissions: %v", err)
+	}
+	if perms.Me != "kim@example.com" {
+		t.Errorf("Me = %q, want kim@example.com", perms.Me)
+	}
+	if len(perms.Memberships) != 1 || perms.Memberships[0].GroupName != "eng" || perms.Memberships[0].Role != "write" {
+		t.Errorf("memberships = %+v", perms.Memberships)
+	}
+	if len(perms.Tree) != 1 || perms.Tree[0].EffectiveRole != "write" || perms.Tree[0].Depth != 0 {
+		t.Errorf("tree = %+v", perms.Tree)
+	}
+	if len(perms.MemberRoles) != 1 || perms.MemberRoles[0].User != "lee@example.com" || perms.MemberRoles[0].Role != "read" {
+		t.Errorf("memberRoles = %+v", perms.MemberRoles)
+	}
+}
+
+func TestGetPermissions_ResponseError(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getPermissionsFn = func(*vaultpb.GetPermissionsRequest) (*vaultpb.GetPermissionsResponse, error) {
+		return &vaultpb.GetPermissionsResponse{Error: "boom"}, nil
+	}
+	if _, err := c.GetPermissions(context.Background(), "", false); err == nil {
+		t.Fatal("want error when response.error is set")
+	}
 }
 
 func (f *fakeServer) Check(_ context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
