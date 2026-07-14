@@ -927,3 +927,171 @@ func (s *LifecycleService) warmupVault(ctx context.Context, timeout time.Duratio
 
 	return &WarmupInfo{OK: true, LatencyMs: &elapsed}
 }
+
+// ─── redeem_invite ────────────────────────────────────────────────
+// Exchange a one-time invite code for the vault token and write it straight to
+// $HOME/.rune/config.json. The token never leaves this process (model P,
+// design-decisions §8.3/§8.4): the secret travels vault → here over TLS, not
+// through a screen, a clipboard, or an agent conversation.
+
+type RedeemInviteArgs struct {
+	Endpoint   string `json:"endpoint"`
+	Code       string `json:"code"`
+	CACertPath string `json:"ca_cert_path,omitempty"`
+	TLSDisable bool   `json:"tls_disable,omitempty"`
+	// Confirm=false (default) only pre-validates the code and returns who the
+	// invite is for. The code is consumed only on a second call with
+	// Confirm=true — the user must see what they are accepting first.
+	Confirm bool `json:"confirm,omitempty"`
+	// Overwrite must be true to replace an already-configured credential:
+	// redeeming burns the one-time code, so a mistaken overwrite would cost
+	// both the existing credential and the invite.
+	Overwrite bool `json:"overwrite,omitempty"`
+}
+
+type RedeemInviteResult struct {
+	Status    string `json:"status"` // "confirm_required" | "active"
+	Email     string `json:"email"`
+	Role      string `json:"role"`
+	ExpiresAt string `json:"expires_at"`
+	MemberID  string `json:"member_id,omitempty"`
+	NextStep  string `json:"next_step,omitempty"`
+
+	// Populated on the consuming call (mirrors ConfigureResult).
+	Path           string `json:"path,omitempty"`
+	VaultReachable *bool  `json:"vault_reachable,omitempty"`
+	ProbeError     string `json:"probe_error,omitempty"`
+}
+
+func (s *LifecycleService) RedeemInvite(ctx context.Context, args RedeemInviteArgs) (*RedeemInviteResult, error) {
+	if args.Endpoint == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
+	}
+	if args.Code == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "code is required"}
+	}
+	if !args.Overwrite {
+		if cfg, err := config.Load(); err == nil && cfg.Vault.Token != "" {
+			return nil, &domain.RuneError{Code: domain.CodeInvalidInput,
+				Message: "config.json already holds a vault credential; pass overwrite=true to replace it"}
+		}
+	}
+
+	r, err := vault.NewRedeemer(args.Endpoint, vault.ClientOpts{
+		CACertPath: args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Close() }()
+
+	info, err := r.Lookup(ctx, args.Code)
+	if err != nil {
+		return nil, err
+	}
+	out := &RedeemInviteResult{Email: info.Email, Role: info.Role, ExpiresAt: info.ExpiresAt}
+	if !args.Confirm {
+		out.Status = "confirm_required"
+		out.NextStep = "Show the user this invite (email, role, expiry). Only after they agree, call redeem_invite again with confirm=true — that consumes the one-time code."
+		return out, nil
+	}
+
+	token, memberID, err := r.Redeem(ctx, args.Code)
+	if err != nil {
+		return nil, err
+	}
+	// The code is burned from here on: a failure below must tell the operator to
+	// revoke + re-invite, and must never surface the token itself.
+	cfgRes, err := s.Configure(ctx, ConfigureArgs{
+		Endpoint:   args.Endpoint,
+		Token:      token,
+		CACertPath: args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("invite consumed but saving credentials failed: %w — the one-time code is now void; ask your admin to revoke the token and re-invite", err)
+	}
+	out.Status = "active"
+	out.MemberID = memberID
+	out.Path = cfgRes.Path
+	out.VaultReachable = cfgRes.VaultReachable
+	out.ProbeError = cfgRes.ProbeError
+	out.NextStep = cfgRes.NextStep
+	return out, nil
+}
+
+// ─── rune_permissions ─────────────────────────────────────────────
+// Read-only RBAC query (requirement 4, plan §6-D8): the caller's own
+// memberships and the depth-annotated group tree they can recall from. The
+// vault owns policy; this is a read-only projection for the caller's token. An
+// org admin may pass include_member_roles for the org-wide listing — a
+// non-admin request for it is denied by the vault (PermissionDenied, §D11).
+
+type PermissionsArgs struct {
+	RootGroup          string `json:"root_group,omitempty" jsonschema:"Optional group id or name; restrict the returned tree to that group's subtree. Empty = the full tree you can reach."`
+	IncludeMemberRoles bool   `json:"include_member_roles,omitempty" jsonschema:"Organization admin only. When true, include the org-wide per-user (group, role) listing. A non-admin request is denied."`
+}
+
+type PermissionsResult struct {
+	OK          bool                   `json:"ok"`
+	Me          string                 `json:"me"`
+	Memberships []PermissionMembership `json:"memberships"`
+	Tree        []PermissionTreeNode   `json:"tree"`
+	MemberRoles []PermissionMemberRole `json:"member_roles,omitempty"`
+}
+
+type PermissionMembership struct {
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+	Role      string `json:"role"`
+}
+
+type PermissionTreeNode struct {
+	GroupID       string `json:"group_id"`
+	Name          string `json:"name"`
+	ParentID      string `json:"parent_id,omitempty"`
+	Depth         int    `json:"depth"`
+	EffectiveRole string `json:"effective_role"`
+}
+
+type PermissionMemberRole struct {
+	User      string `json:"user"`
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+	Role      string `json:"role"`
+}
+
+// Permissions queries the vault for the caller's RBAC view. Read-only: it
+// requires a wired vault (secure mode) — in standard mode there is no policy.
+func (s *LifecycleService) Permissions(ctx context.Context, args PermissionsArgs) (*PermissionsResult, error) {
+	if s.Vault == nil {
+		return nil, &domain.RuneError{
+			Code:    domain.CodeVaultConnection,
+			Message: "permissions requires a configured Vault (secure mode); none is wired. Run /rune:configure then /rune:activate.",
+		}
+	}
+
+	perms, err := s.Vault.GetPermissions(ctx, args.RootGroup, args.IncludeMemberRoles)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &PermissionsResult{OK: true, Me: perms.Me}
+	for _, m := range perms.Memberships {
+		res.Memberships = append(res.Memberships, PermissionMembership{GroupID: m.GroupID, GroupName: m.GroupName, Role: m.Role})
+	}
+	for _, n := range perms.Tree {
+		res.Tree = append(res.Tree, PermissionTreeNode{
+			GroupID:       n.GroupID,
+			Name:          n.Name,
+			ParentID:      n.ParentID,
+			Depth:         n.Depth,
+			EffectiveRole: n.EffectiveRole,
+		})
+	}
+	for _, mr := range perms.MemberRoles {
+		res.MemberRoles = append(res.MemberRoles, PermissionMemberRole{User: mr.User, GroupID: mr.GroupID, GroupName: mr.GroupName, Role: mr.Role})
+	}
+	return res, nil
+}

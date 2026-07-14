@@ -191,6 +191,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, deps.Inflight, "capture_history",
 		"List recent captures from local capture_log.jsonl (read-only).",
 		handleCaptureHistory(deps))
+	mustAdd(srv, deps.Inflight, "permissions",
+		"Show your RBAC permissions: your group memberships and the depth-annotated group tree you can recall from (effective role). Organization admin may pass include_member_roles for the org-wide (user, group, role) listing.",
+		handlePermissions(deps))
 	mustAdd(srv, deps.Inflight, "vault_status",
 		"Probe Vault connectivity and report secure-search mode.",
 		handleVaultStatus(deps))
@@ -200,6 +203,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, deps.Inflight, "configure",
 		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
 		handleConfigure(deps))
+	mustAdd(srv, deps.Inflight, "redeem_invite",
+		"Exchange a one-time invite code (from the invite mail) for Vault credentials. Two-phase: first call WITHOUT confirm — it only pre-validates and returns who the invite is for (email/role/expiry); show that to the user. Only after the user agrees, call again with confirm=true: that consumes the code, writes the released token straight to $HOME/.rune/config.json (the token is never returned) and marks state=active. Pass overwrite=true only to replace an existing credential.",
+		handleRedeemInvite(deps))
 	mustAdd(srv, deps.Inflight, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
 		handleActivate(deps))

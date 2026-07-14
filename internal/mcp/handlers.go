@@ -91,6 +91,17 @@ func handleCaptureHistory(deps *Deps) sdkmcp.ToolHandlerFor[service.CaptureHisto
 	}
 }
 
+func handlePermissions(deps *Deps) sdkmcp.ToolHandlerFor[service.PermissionsArgs, service.PermissionsResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.PermissionsArgs) (*sdkmcp.CallToolResult, service.PermissionsResult, error) {
+		var zero service.PermissionsResult
+		out, err := deps.Lifecycle.Permissions(ctx, in)
+		if err != nil {
+			return errorResult(err), zero, nil
+		}
+		return okResult(out), *out, nil
+	}
+}
+
 func handleVaultStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.VaultStatusResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.VaultStatusResult, error) {
 		var zero service.VaultStatusResult
@@ -135,6 +146,18 @@ func handleReloadPipelines(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ReloadPipelinesResult, error) {
 		var zero service.ReloadPipelinesResult
 		out, err := deps.Lifecycle.ReloadPipelines(ctx)
+		if err != nil {
+			return errorResult(err), zero, nil
+		}
+		return okResult(out), *out, nil
+	}
+}
+
+func handleRedeemInvite(deps *Deps) sdkmcp.ToolHandlerFor[service.RedeemInviteArgs, service.RedeemInviteResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.RedeemInviteArgs) (*sdkmcp.CallToolResult, service.RedeemInviteResult, error) {
+		var zero service.RedeemInviteResult
+		// token is written to config.json inside the service, never returned
+		out, err := deps.Lifecycle.RedeemInvite(ctx, in)
 		if err != nil {
 			return errorResult(err), zero, nil
 		}
